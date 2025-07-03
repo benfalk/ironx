@@ -68,13 +68,26 @@ mod application {
 
     /// # Application Trait
     ///
-    /// TODO: explain the parts of this and the idea of how to
-    ///       work with it organiationally
+    /// Serves as a base trait for all applications.  This trait
+    /// ensures the following cornerstones of an application:
+    ///
+    /// - can be initialized by a configuration
+    /// - the configuration can be serialized and deserialized
+    /// - an enforced abstract contract to it's environment
+    /// - an enforced abstract conctract to running app context
+    /// - access to an async compatibile, context bounded, runtime
     ///
     pub trait Application: Sized + Stable {
+        /// Configuration needed by the application to run
         type Config: Stable + SerdeCompatible;
+
+        /// Error type that is compatible with the application
         type Error: ErrorCompatible;
+
+        /// State that the application needs to run
         type Env: Stable;
+
+        /// Context state used by the [Runtime]
         type Ctx: Stable;
 
         /// # Initialization
@@ -94,7 +107,7 @@ mod application {
 
         /// # Build Runtime
         ///
-        /// With the provided contet a [Runtime] is
+        /// With the provided context a [Runtime] is
         /// returned that provides access to interact
         /// with the application.
         ///
@@ -106,10 +119,28 @@ mod application {
 mod command {
     use crate::{Application, ErrorCompatible, SerdeCompatible, Stable};
 
+    /// # Command Trait
+    ///
+    /// The command trait is used to abstract functionality that
+    /// is intended to be run by the application [crate::Runtime].
+    /// By capturing the context and environment of a command's
+    /// supporting application, it allows for the command to run
+    /// for multiple applications without needing to be defined
+    /// again.
+    ///
     pub trait Command<App: Application>: Stable + SerdeCompatible {
+        /// Success case the command returns
         type Success: SerdeCompatible;
+
+        /// Failure type that this command can return
         type Failure: ErrorCompatible;
 
+        /// Asynchronous function that must be implemented for
+        /// this command to run.  It receives the context and
+        /// environment of the application and must return a
+        /// result with the success or failure type of it's trait
+        /// signature.
+        ///
         fn call(
             &self,
             ctx: &App::Ctx,
@@ -120,6 +151,11 @@ mod command {
 mod runtime {
     use crate::{Application, Command};
 
+    /// # Application Runtime
+    ///
+    /// Provides an interface to interact with an application.
+    ///
+    #[derive(Debug, Clone)]
     pub struct Runtime<'a, App>
     where
         App: Application,
@@ -132,6 +168,7 @@ mod runtime {
     where
         App: Application,
     {
+        #[doc(hidden)]
         pub(crate) fn new(application: &'a App, context: &'a App::Ctx) -> Self {
             Self {
                 application,
@@ -139,6 +176,11 @@ mod runtime {
             }
         }
 
+        /// # Run Command
+        ///
+        /// Provides an interface to run a [Command] that is
+        /// compatible with the application that provided it.
+        ///
         pub async fn run_command<T>(&self, cmd: &T) -> Result<T::Success, T::Failure>
         where
             T: Command<App>,
