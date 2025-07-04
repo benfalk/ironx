@@ -4,11 +4,12 @@
 //! Simple framework for creating applications
 //!
 
+pub use app_container::AppContainer;
 pub use application::Application;
 pub use command::Command;
 pub use error_compatible::ErrorCompatible;
 pub use resource::Resource;
-pub use runtime::Runtime;
+pub use runtime::{BorrowedRuntime, Runtime};
 pub use serde_compatible::SerdeCompatible;
 pub use stable::Stable;
 
@@ -62,9 +63,15 @@ mod resource {
     pub trait Resource<T>: Stable {
         fn resource(&self) -> &T;
     }
+
+    impl<T: Stable> Resource<T> for T {
+        fn resource(&self) -> &T {
+            self
+        }
+    }
 }
 mod application {
-    use crate::{ErrorCompatible, Runtime, SerdeCompatible, Stable};
+    use crate::{ErrorCompatible, SerdeCompatible, Stable};
 
     /// # Application Trait
     ///
@@ -104,16 +111,6 @@ mod application {
         /// environment for different actions.
         ///
         fn env(&self) -> &Self::Env;
-
-        /// # Build Runtime
-        ///
-        /// With the provided context a [Runtime] is
-        /// returned that provides access to interact
-        /// with the application.
-        ///
-        fn build_runtime<'a>(&'a self, context: &'a Self::Ctx) -> Runtime<'a, Self> {
-            Runtime::new(self, context)
-        }
     }
 }
 mod command {
@@ -151,12 +148,22 @@ mod command {
 mod runtime {
     use crate::{Application, Command};
 
-    /// # Application Runtime
+    /// # Runtime Trait
     ///
     /// Provides an interface to interact with an application.
     ///
+    pub trait Runtime<App: Application> {
+        fn run_command<T>(&self, cmd: &T) -> impl Future<Output = Result<T::Success, T::Failure>>
+        where
+            T: Command<App>;
+    }
+
+    /// # Borrowed Application Runtime
+    ///
+    /// A borrowed [Runtime] with an [Application::Ctx]
+    ///
     #[derive(Debug, Clone)]
-    pub struct Runtime<'a, App>
+    pub struct BorrowedRuntime<'a, App>
     where
         App: Application,
     {
@@ -164,7 +171,16 @@ mod runtime {
         context: &'a App::Ctx,
     }
 
-    impl<'a, App> Runtime<'a, App>
+    impl<'a, App: Application> Runtime<App> for BorrowedRuntime<'a, App> {
+        async fn run_command<T>(&self, cmd: &T) -> Result<T::Success, T::Failure>
+        where
+            T: Command<App>,
+        {
+            cmd.call(self.context, self.application.env()).await
+        }
+    }
+
+    impl<'a, App> BorrowedRuntime<'a, App>
     where
         App: Application,
     {
@@ -175,17 +191,59 @@ mod runtime {
                 context,
             }
         }
+    }
+}
+mod app_container {
+    use crate::{Application, BorrowedRuntime, Runtime};
 
-        /// # Run Command
-        ///
-        /// Provides an interface to run a [Command] that is
-        /// compatible with the application that provided it.
-        ///
-        pub async fn run_command<T>(&self, cmd: &T) -> Result<T::Success, T::Failure>
+    /// # Application Container
+    ///
+    /// A layer of abstraction that serves as a default [Runtime]
+    /// with it's provied [Self::default_context] as the context
+    /// for is it's lifetime.  This allows the application to have
+    /// a default context which can be used to run commands where
+    /// such a context is required, without needing to provide a
+    /// default context every time a command is run.
+    ///
+    #[derive(Debug, Clone)]
+    pub struct AppContainer<App: Application> {
+        app: App,
+        default_context: App::Ctx,
+    }
+
+    impl<App: Application> AppContainer<App> {
+        pub fn with_default_context(ctx: App::Ctx) -> AppContainerBuilder<App> {
+            AppContainerBuilder {
+                default_context: ctx,
+            }
+        }
+
+        pub fn with_context<'a>(&'a self, ctx: &'a App::Ctx) -> BorrowedRuntime<'a, App> {
+            BorrowedRuntime::new(&self.app, ctx)
+        }
+    }
+
+    impl<App: Application> Runtime<App> for AppContainer<App> {
+        async fn run_command<T>(&self, cmd: &T) -> Result<T::Success, T::Failure>
         where
-            T: Command<App>,
+            T: crate::Command<App>,
         {
-            cmd.call(self.context, self.application.env()).await
+            cmd.call(&self.default_context, self.app.env()).await
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct AppContainerBuilder<App: Application> {
+        default_context: App::Ctx,
+    }
+
+    impl<App: Application> AppContainerBuilder<App> {
+        pub async fn init(self, config: App::Config) -> Result<AppContainer<App>, App::Error> {
+            let app = App::init(config).await?;
+            Ok(AppContainer {
+                app,
+                default_context: self.default_context,
+            })
         }
     }
 }
@@ -196,7 +254,7 @@ mod tests {
     use ::serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
-    struct GreetingFrom {
+    struct GreetingsFrom {
         pub location: String,
     }
 
@@ -227,19 +285,7 @@ mod tests {
         }
     }
 
-    impl Resource<Vistor> for Vistor {
-        fn resource(&self) -> &Vistor {
-            self
-        }
-    }
-
-    impl Resource<Host> for Host {
-        fn resource(&self) -> &Host {
-            self
-        }
-    }
-
-    impl<App> Command<App> for GreetingFrom
+    impl<App> Command<App> for GreetingsFrom
     where
         App: Application,
         App::Ctx: Resource<Vistor>,
@@ -269,20 +315,19 @@ mod tests {
 
     #[tokio::test]
     async fn it_works() {
-        let greeter = Greetings::init("TestApp".into()).await.unwrap();
-        let context = Vistor("test-user".into());
-
-        let message = greeter
-            .build_runtime(&context)
-            .run_command(&GreetingFrom {
-                location: "Timbuktu".into(),
+        let app = AppContainer::<Greetings>::with_default_context(Vistor("Alice".to_string()))
+            .init("Iron X".to_string())
+            .await
+            .expect("Failed to initialize application");
+        let messsage = app
+            .run_command(&GreetingsFrom {
+                location: "Rustland".to_string(),
             })
             .await
-            .unwrap();
-
+            .expect("Failed to run command");
         assert_eq!(
-            message,
-            "Hello test-user, welcome to Timbuktu on behalf of TestApp!"
+            messsage,
+            "Hello Alice, welcome to Rustland on behalf of Iron X!"
         );
     }
 }
