@@ -1,9 +1,10 @@
 [package]
-name = "ironx"
+name = "ironx_core"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+paste = { workspace = true }
 serde = { workspace = true, features = [] }
 
 [dev-dependencies]

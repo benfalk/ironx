@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["ironx"]
+members = ["ironx_core", "ironx_db"]
 
 [workspace.dependencies]
 thiserror = { version = "2.0" }
 serde = { version = "1.0", features = [] }
 anyhow = { version = "1.0" }
 tokio = { version = "1.46", features = ["full"] }
+paste = { version = "1.0" }

@@ -212,12 +212,14 @@ mod app_container {
     }
 
     impl<App: Application> AppContainer<App> {
+        /// Sets the default context for the application runtime.
         pub fn with_default_context(ctx: App::Ctx) -> AppContainerBuilder<App> {
             AppContainerBuilder {
                 default_context: ctx,
             }
         }
 
+        /// Creates a temporary runtime for the provided context
         pub fn with_context<'a>(&'a self, ctx: &'a App::Ctx) -> BorrowedRuntime<'a, App> {
             BorrowedRuntime::new(&self.app, ctx)
         }
@@ -232,18 +234,63 @@ mod app_container {
         }
     }
 
+    /// # [AppContainer] Builder
+    ///
+    /// Intermediate build state that is ready to initialize
+    /// into an [AppContainer] with it's default context.  Use
+    /// [Self::init] to finish construction.
+    ///
     #[derive(Debug)]
     pub struct AppContainerBuilder<App: Application> {
         default_context: App::Ctx,
     }
 
     impl<App: Application> AppContainerBuilder<App> {
+        /// # Application Initialization
+        ///
+        /// Uses the given [Application::Config] in an
+        /// attempt to require resources and holds it's
+        /// required [Application::Env].
+        ///
         pub async fn init(self, config: App::Config) -> Result<AppContainer<App>, App::Error> {
             let app = App::init(config).await?;
             Ok(AppContainer {
                 app,
                 default_context: self.default_context,
             })
+        }
+    }
+}
+mod draw_environment {
+    #[macro_export]
+    macro_rules! draw_environment {
+        ($name:ident { $($field:ident: $type:ty),*  } ) => {
+            #[derive(Debug, Clone)]
+            struct $name {
+                $(pub $field: $type,)*
+            }
+
+            $(
+                impl $crate::Resource<$type> for $name {
+                    fn resource(&self) -> &$type {
+                        &self.$field
+                    }
+                }
+            )*
+
+            ::paste::paste! {
+                trait [<$name Env>]: $(
+                    Resource<$type> +
+                )*
+                Stable {}
+
+                impl<T:
+                $(
+                    Resource<$type> +
+                )*
+                    Stable
+                >[<$name Env>] for T {}
+            }
         }
     }
 }
@@ -264,11 +311,10 @@ mod tests {
     #[derive(Debug, Serialize, Deserialize, Clone)]
     struct Vistor(String);
 
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    struct Greetings(Host);
-
     #[derive(Debug, ::thiserror::Error)]
     enum GeetingsErr {}
+
+    draw_environment!(Greetings { host: Host });
 
     impl Application for Greetings {
         type Config = String;
@@ -277,11 +323,11 @@ mod tests {
         type Ctx = Vistor;
 
         async fn init(config: Self::Config) -> Result<Self, Self::Error> {
-            Ok(Self(Host(config)))
+            Ok(Greetings { host: Host(config) })
         }
 
         fn env(&self) -> &Self::Env {
-            &self.0
+            self.resource()
         }
     }
 
@@ -289,7 +335,7 @@ mod tests {
     where
         App: Application,
         App::Ctx: Resource<Vistor>,
-        App::Env: Resource<Host>,
+        App::Env: GreetingsEnv,
     {
         type Success = String;
         type Failure = std::fmt::Error;

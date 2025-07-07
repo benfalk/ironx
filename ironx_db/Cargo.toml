@@ -1,0 +1,10 @@
+[package]
+name = "ironx_db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ironx_core = { path = "../ironx_core" }
+
+[dev-dependencies]
+tokio = { workspace = true }
